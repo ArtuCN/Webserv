@@ -7,6 +7,8 @@
 #include "Request.hpp"
 #include "Server.hpp"
 #include <csignal>
+#include <fstream>
+#include <string>
 
 class conf {
 
@@ -15,7 +17,8 @@ class conf {
 		std::map<int,server>	_servers;
 		std::string				_fullPath;
 		bool					_listing;
-
+		int						_nbrServer;
+		std::string				_responseContent;
 	public:
 		conf();
 
@@ -28,6 +31,8 @@ class conf {
 
 		bool		getListing();
 		std::string	getFullPath();
+		int			getNbrServer();
+		std::string	getResponseContent();
 		server getServer(std::string port);
 		server		getServer(int nbrServer);
 		std::map<int, server>& getMapServer();
@@ -37,6 +42,7 @@ class conf {
 		void		check();
 		void		addHost();
 		void		checkRequest(Request* req);
+		int	        findServerByHostHeader(Request* req);
 
 		void	run();
 

@@ -10,8 +10,8 @@
 #include "../includes/webserv.hpp"
 
 void server::closeSocket() {
-	for (std::vector<struct pollfd>::iterator it = _poll_fds.begin(); it != _poll_fds.end(); it++)
-		close(it->fd);
+	for (size_t i = 0; i < _pollfd_size; i++)
+		close(_poll_fds[i].fd);
 }
 
 void server::addNametoHost() {
@@ -38,26 +38,41 @@ void server::addNametoHost() {
 	hosts.close();
 }
 
-void server::close_connection(int index) {
-	int client_fd = _poll_fds[index].fd;
-	close(client_fd);
-	_client_buffers.erase(client_fd);
-	_client_responses.erase(client_fd);
-	_poll_fds.erase(_poll_fds.begin() + index);
+void server::close_connection(size_t index) {
+    int client_fd = _poll_fds[index].fd;
+    close(client_fd);
+    _client_buffers.erase(client_fd);
+    _client_responses.erase(client_fd);
+    struct pollfd* new_poll_fds = new struct pollfd[_pollfd_size - 1];
+    size_t j = 0;
+    for (size_t i = 0; i < _pollfd_size; ++i) {
+        if (i != index) {
+            new_poll_fds[j] = _poll_fds[i];
+            j++;
+        }
+    }
+    delete[] _poll_fds;
+    _poll_fds = new_poll_fds;
+    _pollfd_size--;
 }
+
 
 void server::handle_new_connection(int server_fd)
 {
 	struct sockaddr_in client_addr;
 	socklen_t client_len = sizeof(client_addr);
-
 	int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
-	if (client_fd < 0) return;
+	if (client_fd < 0) 
+		return;
 	set_nonblocking(client_fd);
-	struct pollfd pfd;
-	pfd.fd = client_fd;
-	pfd.events = POLLIN;
-	_poll_fds.push_back(pfd);
+	struct pollfd* new_poll_fds = new struct pollfd[_pollfd_size + 1];
+	std::memcpy(new_poll_fds, _poll_fds, sizeof(struct pollfd) * _pollfd_size);
+	new_poll_fds[_pollfd_size].fd = client_fd;
+	new_poll_fds[_pollfd_size].events = POLLIN | POLLOUT;
+	new_poll_fds[_pollfd_size].revents = 0;
+	delete[] _poll_fds;
+	_poll_fds = new_poll_fds;
+	_pollfd_size++;
 	_client_buffers[client_fd] = "";
 }
 
@@ -66,9 +81,10 @@ void server::set_nonblocking(int fd) {
 	fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-bool server::init(int port)
+bool server::init(int port, int i)
 {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+	std::cout << "Server socket: " << server_fd << std::endl;
     if (server_fd < 0) 
         return false;
 
@@ -92,25 +108,18 @@ bool server::init(int port)
         return false;
     }
 
-    if (listen(server_fd, SOMAXCONN) < 0) {  // Use SOMAXCONN instead of 3
+    if (listen(server_fd, SOMAXCONN) < 0) {
         close(server_fd);
         return false;
     }
-
-    // Add to server sockets array
     ServerSocket ss;
     ss.fd = server_fd;
     ss.port = port;
-    _server_sockets.push_back(ss);
+	_server_sockets.push_back(ss);
+	_poll_fds[i].fd = server_fd;
+	_poll_fds[i].events = POLLIN | POLLOUT;
+	_poll_fds[i].revents = 0;
 
-    // Add to poll array
-    struct pollfd pfd;
-    pfd.fd = server_fd;
-    pfd.events = POLLIN;
-    pfd.revents = 0;
-    _poll_fds.push_back(pfd);
-
-    return true;
 	return true;
 }
 
@@ -131,10 +140,9 @@ void server::starting() {
 
 void server::printFdsVect()
 {
-	std::vector<struct pollfd>::iterator it = _poll_fds.begin();
-	for(; it != _poll_fds.end(); it++ )
+	for(size_t i = 0; i < _pollfd_size; i++ )
 	{
-		std::cout << it->fd << std::endl;
+		std::cout << _poll_fds[i].fd << std::endl;
 	}
 }
 
@@ -146,65 +154,49 @@ int server::getPort() const
     return -1;
 }
 
-void server::s_run(conf* ConfBlock, Request* req)
+void server::s_run(conf* ConfBlock, Request* req, int ret)
 {
-	// Single iteration of event handling
-	int ret = poll(&_poll_fds[0], _poll_fds.size(), 0); // Non-blocking poll
 	bool is_server_socket = false;
-
+	ret = poll(_poll_fds, _pollfd_size, 0);
+	if (ret == 0)
+		return ;
 	if (Quit == true)
-		return;
+		return ;
 	if (ret < 0) {
 		std::cerr << "Poll error: " << strerror(errno) << std::endl;
 		return;
 	}
-
-	if (ret > 0) {
-		for (size_t i = 0; i < _poll_fds.size(); ++i) {
-			// ! ci siamo quasi, la pagina viene caricata sul client ma non riceve mai la risposta dio madonna
-			ret = poll(&_poll_fds[i], _poll_fds.size(), 0); // Non-blocking poll
-			if (ret < 0) {
-				std::cerr << "Poll error: " << strerror(errno) << std::endl;
-				return;
+	for (size_t i = 0; i < _pollfd_size; ++i) {
+		is_server_socket = false;
+		if (Quit == true)
+			return ;
+		if (_poll_fds[i].revents == 0)
+			continue;
+		for (size_t j = 0; j < _server_sockets.size(); ++j) {
+			if (_poll_fds[i].fd == _server_sockets[j].fd) {
+				if (_poll_fds[i].revents == POLLIN) {
+					is_server_socket = true;
+					handle_new_connection(_server_sockets[j].fd);
+					break;
+				}
 			}
-			if (_poll_fds[i].revents == 0)
-				continue;
-
-			try {
-				for (size_t j = 0; j < _server_sockets.size(); ++j) {
-					if (_poll_fds[i].fd == _server_sockets[j].fd) {
-						is_server_socket = true;
-						if (_poll_fds[i].revents == POLLIN) {
-							handle_new_connection(_server_sockets[j].fd);
-							std::cout << "Connection created\n";
-						}
-						break;
-					}
-				}
-				if (!is_server_socket) {
-					if (_poll_fds[i].revents & POLLIN) {
-						std::cout << "Request on server port " << getPort() << std::endl;
-						req->getRequest(_poll_fds[i].fd, _poll_fds[i].events, _bodysize * 1000000, ConfBlock);
-						_poll_fds[i].events = POLLOUT; // Set for writing response
-					}
-
-					if (_poll_fds[i].revents & POLLOUT) {
-						std::cout << "Response from server port " << getPort() << std::endl;
-						bool finish = sendResponse(_poll_fds[i].fd, ConfBlock, req, _poll_fds[i].events);
-						req->clear();  // Clear the request after sending the response
-						if (finish == true) {
-							_poll_fds[i].events = 0;
-						} else {
-							_poll_fds[i].events = POLLIN; // Re-enable POLLIN for the next request
-						}
-					}
-				}
-			} catch (const std::exception& e) {
-				std::cerr << "Error on fd " << _poll_fds[i].fd << ": " << e.what() << std::endl;
+		}
+		if (is_server_socket)
+			break ;
+		try {
+			if (_poll_fds[i].revents & POLLIN) {
+				req->getRequest(_poll_fds[i].fd, _poll_fds[i].events, _bodysize * 1000000, ConfBlock);
+			}
+			if (_poll_fds[i].revents & POLLOUT) {
+				bool finish = sendResponse(_poll_fds[i].fd, ConfBlock, req, _poll_fds[i].events);
 				req->clear();
-				close_connection(i);
+				(void)finish;
 			}
-			_poll_fds[i].revents = 0;
+		} catch (const std::exception& e) {
+			std::cerr << "Error on fd " << _poll_fds[i].fd << ": " << e.what() << std::endl;
+			close_connection(i);
+			req->clear();
+			i--;
 		}
 	}
 }

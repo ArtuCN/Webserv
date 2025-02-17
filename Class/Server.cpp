@@ -86,6 +86,7 @@ location::~location() {}
 
 server::server() : ABlock(), _listing(false) {
 	_index = "";
+	_poll_fds = NULL;
 }
 
 size_t server::getLocationSize() const {
@@ -228,16 +229,6 @@ void server::addVal()
 		_bodysize = size;
 		_data.erase(it);
 	}
-	it = _data.find("client_body_timeout");
-	if (it != _data.end()) {
-		int timeout = std::atoi(it->second.c_str());
-			if (it->second[it->second.length() - 1] != 's' || timeout <= 0)
-				throw exc("Error: body timeout value not valid\n");
-		_timeout = timeout;
-		_data.erase(it);
-	}
-	else
-		_timeout = 60;
 	it = _data.find("root");
 	if (it != _data.end()) {
 		_root = it->second;
@@ -330,11 +321,12 @@ location server::getLocation(std::string to_find) {
 	return null;
 }
 
-std::string server::getListen(std::string& to_find) {
+bool server::getListen(std::string& to_find) {
+	bool ret = false;
 	for (std::vector<std::string>::iterator it = _listens.begin(); it != _listens.end(); it++)
 		if (*it == to_find)
-			return *it;
-	return NULL;
+			ret = true;
+	return ret;
 }
 
 std::string server::getServerName(std::string& to_find) {
@@ -355,11 +347,17 @@ bool server::checkLocation(std::string to_find) {
 
 void server::startListens()
 {
+	int i = 0;
+	_pollfd_size = _ports.size();
+	_poll_fds = new struct pollfd[_pollfd_size];
 	for (std::vector<int>::iterator it = _ports.begin(); it != _ports.end(); it++)
 	{
-		init(*it);
+		init(*it, i);
+		i++;
 	}
 }
 
-server::~server() {}
-
+server::~server() {
+	if (_poll_fds)
+		delete[] _poll_fds;
+}

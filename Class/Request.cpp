@@ -1,6 +1,6 @@
 
 #include "../includes/webserv.hpp"
-#include <bits/c++config.h>
+//#include <bits/c++config.h>
 #include <cerrno>
 #include <cstdio>
 #include <fstream>
@@ -19,15 +19,21 @@ Request::Request() {
 	_method = "";
 	_url = "";
 	_httpVersion = "";
+	_file = "";
+	_nameFile = "";
+	_headers_complete = false;
+	_body_complete = false;
+	_content_length = 0;
 }
 
 std::string Request::generateBody() {
-	std::string ret;
-	ret = "{\r\n \"fileName\": \"" + getFileName() +
-			"\",\r\n \"fileType\": \""+ getBody("Content-Type") +"\",\r\n"
-			" \"operation\": \"upload\",\r\n"
-			" \"status\": \"success\"\r\n}\r\n\r\n";
-	return ret;
+    std::string ret;
+    ret = "{\r\n \"fileName\": \"" + 
+        (_nameFile.empty() ? "unknown" : _nameFile) + "\",\r\n \"fileType\": \"" + 
+        (getBody("Content-Type").empty() ? "application/octet-stream" : getBody("Content-Type")) + "\",\r\n" 
+        " \"operation\": \"upload\",\r\n" 
+        " \"status\": \"success\"\r\n}\r\n\r\n";
+    return ret;
 }
 
 std::string Request::getFileName() {
@@ -39,23 +45,19 @@ std::string Request::getBody(const std::string& Key) {
 }
 
 void Request::clear() {
-	_method.clear();
-	_headers.clear();
+	_url.clear();
 	_file.clear();
 	_httpVersion.clear();
-	_url.clear();
+	_method.clear();
+	_headers.clear();
 	_body.clear();
-}
-
-void Request::parsDelete(std::stringstream& file, std::string& line) {
-	// TODO: iniziare;
-	(void)file;
-	(void)line;
-	std::cout << "parsDelete\n";
+	_nameFile.clear();
+	_headers_complete = false;
+	_body_complete = false;
+	_content_length = 0;
 }
 
 void Request::parsApplication(std::stringstream& bodyData, std::string& line, std::string Path) {
-	// TODO: salvare i dati da qualche parte(non so dove e come);
 	std::string Key, Tp, value;
 	(void)Path;
 	while (std::getline(bodyData, line) && !line.substr(0, line.length() - 1).empty())
@@ -169,12 +171,9 @@ void Request::parsPost(std::stringstream& file, std::string& line, std::string P
 }
 
 void Request::ParsRequest(std::stringstream& to_pars, conf* ConfBlock) {
-	// TODO: Parsing per la CGI;
 	std::string line = "";
 	std::getline(to_pars, line);
-	// std::cout << line << '\n';
 	std::stringstream req_line(line);
-	// std::cout << req_line.str() << std::endl;
 	req_line >> _method >> _url >> _httpVersion;
 	while (std::getline(to_pars, line) && !line.substr(0, line.length() - 1).empty()) {
 		size_t colon_pos = line.find(':');
@@ -184,32 +183,30 @@ void Request::ParsRequest(std::stringstream& to_pars, conf* ConfBlock) {
 			_headers.insert(std::make_pair(Key, Tp));
 		}
 	}
-	ConfBlock->checkRequest(this);
+	if (!_headers.empty())
+		ConfBlock->checkRequest(this);
 	if (_method == "POST")
 		parsPost(to_pars, line, ConfBlock->getFullPath());
-	else if (_method == "DELETE")
-		parsDelete(to_pars, line);
 }
 
-void Request::getRequest(int &client_socket, short& event, int MaxSize, conf* ConfBlock) {
+void Request::getRequest(int client_socket, short& event, int MaxSize, conf* ConfBlock) {
 	std::stringstream buffer;
-	size_t total_received = 0, content_length = 0, header_end = std::string::npos;
+	(void)MaxSize;
+	size_t total_received = 0, content_length = 0, header_end = std::string::npos, chunkSize = 1024;
 	bool headers_complete = false;
 	std::string temp_buffer;
 
-	while (true) {
-		char* chunk = new char[MaxSize];
-		int bytes_received = recv(client_socket, chunk, MaxSize, 0);
-		if (bytes_received <= 0 || bytes_received == MaxSize) {
-			int err = errno;
-			if (err == EAGAIN)
-				std::cout << "EAGAIN No data available, try again later." << std::endl;
-			else if (err == EWOULDBLOCK)
-				std::cout << "EWOULDBLOCK No data available, try again later." << std::endl;
-			else if (err == ECONNRESET)
-				std::cout << "Connection reset by peer." << std::endl;
+	while (total_received < content_length + header_end + 4) {
+		char* chunk = new char[chunkSize];
+		int bytes_received = recv(client_socket, chunk, chunkSize, 0);
+		if (bytes_received == 0) {
+			event = 0;
+			delete [] chunk;
+			return ;
+		}
+		else if (bytes_received < 0) {
 			delete[] chunk;
-			break;
+			continue;
 		}
 		buffer.write(chunk, bytes_received);
 		delete[] chunk;
@@ -228,15 +225,10 @@ void Request::getRequest(int &client_socket, short& event, int MaxSize, conf* Co
 				}
 			}
 		}
-		if (headers_complete && content_length > 0) {
-			if (total_received >= content_length + header_end + 4) {
-				break;
-			}
-		}
 	}
-	std::cout << buffer.str() << std::endl;
-	ParsRequest(buffer, ConfBlock);
-	event = POLLOUT;
+	if (total_received > 0) {
+		ParsRequest(buffer, ConfBlock);
+	}
 }
 
 void Request::setHeadersComplete(bool complete) {

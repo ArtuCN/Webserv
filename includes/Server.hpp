@@ -3,7 +3,9 @@
 
 #include "Ablock.hpp"
 #include "Request.hpp"
+#include <cstddef>
 #include <string>
+#include <sys/poll.h>
 #include <vector>
 #include <map>
 #include <poll.h>
@@ -46,7 +48,8 @@ class server : public ABlock {
 		std::map<int, std::string>		_client_buffers;
 		std::vector<ServerSocket>		_server_sockets;
 		std::vector<int>				_server_fd;
-		std::vector<struct pollfd>		_poll_fds;
+		struct pollfd*					_poll_fds;
+		size_t							_pollfd_size;
 		std::map<int, std::string> 		_client_responses;
 
 		std::string						_index;
@@ -73,13 +76,13 @@ class server : public ABlock {
 				void	starting();
 		
 		
-		bool	init(int port);
-		void	s_run(conf* ConfBlock, Request* req);
+		bool	init(int port, int i);
+		void	s_run(conf* ConfBlock, Request* req, int ret);
 		void	handle_new_connection(int server_fd);
 		void	handle_client_data(int index);
 		void	handle_client_response(int index);
 		void	handle_request(int client_fd, const std::string& request);
-		void	close_connection(int index);
+		void	close_connection(size_t index);
 		void	closeSocket();
 		void	set_nonblocking(int fd);
 		void	addNametoHost();
@@ -90,8 +93,11 @@ class server : public ABlock {
 		std::string	getIndex();
 		void 		startListens();
 		location	getLocation(std::string to_find);
-		std::string getListen(std::string& to_find);
+		bool getListen(std::string& to_find);
 		std::string getServerName(std::string& to_find);
+		std::vector<std::string>& getServerNames() {
+        	return _server_names;
+		}
 
 		~server();
 };
