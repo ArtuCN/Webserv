@@ -1,8 +1,9 @@
-
 #include "../includes/webserv.hpp"
 //#include <bits/c++config.h>
 #include <cerrno>
+#include <cstddef>
 #include <cstdio>
+#include <fcntl.h>
 #include <fstream>
 #include <ios>
 #include <map>
@@ -26,13 +27,41 @@ Request::Request() {
 	_content_length = 0;
 }
 
+ std::string Request::generateDeleteBody() {
+	std::string ret;
+	switch (StatusCode) {
+		case 200:
+			ret = "{ \"message\": \"Resource deleted successfully\" }\r\n";
+			break;
+		case 404:
+			ret = "{ \"error\": \"Resource not found\" }\r\n";
+			break;
+		case 403:
+			ret = "{ \"error\": \"Access forbidden\" }\r\n";
+			break;
+		case 500:
+			ret = "{ \"error\": \"Internal server error\" }\r\n";
+			break;
+	}
+	return ret;
+}
+
 std::string Request::generateBody() {
     std::string ret;
-    ret = "{\r\n \"fileName\": \"" + 
-        (_nameFile.empty() ? "unknown" : _nameFile) + "\",\r\n \"fileType\": \"" + 
-        (getBody("Content-Type").empty() ? "application/octet-stream" : getBody("Content-Type")) + "\",\r\n" 
-        " \"operation\": \"upload\",\r\n" 
-        " \"status\": \"success\"\r\n}\r\n\r\n";
+	switch (StatusCode) {
+		case 200:
+			ret = "{ \"message\": \"Resource deleted successfully\" }\r\n\r\n";
+			break;
+		case 404:
+			ret = "{ \"error\": \"Resource not found\" }\r\n\r\n";
+			break;
+		case 403:
+			ret = "{ \"error\": \"Access forbidden\" }\r\n\r\n";
+			break;
+		case 500:
+			ret = "{ \"error\": \"Internal server error\" }\r\n\r\n";
+			break;
+	}
     return ret;
 }
 
@@ -55,14 +84,19 @@ void Request::clear() {
 	_headers_complete = false;
 	_body_complete = false;
 	_content_length = 0;
+	StatusCode = 0;
 }
 
-void Request::parsApplication(std::stringstream& bodyData, std::string& line, std::string Path) {
+void Request::parsApplication(std::stringstream& bodyData, std::string& line, std::string Path, size_t contentLength) {
 	std::string Key, Tp, value;
 	(void)Path;
 	while (std::getline(bodyData, line) && !line.substr(0, line.length() - 1).empty())
 		;
 	std::getline(bodyData, line);
+	if (line.length() < contentLength) {
+		StatusCode = 400;
+		return;
+	}
 	if (line.find('&') != NOT_FOUND) {
 		while (!line.empty()) {
 			if (line.rfind('&') != NOT_FOUND) {
@@ -92,13 +126,13 @@ void Request::parsApplication(std::stringstream& bodyData, std::string& line, st
 	_PostFile.close();
 }
 
-void Request::parsMultipart(std::stringstream& bodyData, std::string& Path, std::string Type) {
+void Request::parsMultipart(std::stringstream& bodyData, std::string& Path, std::string Type, size_t contentLength) {
 	std::string Value, Boundary, endBoundary;
-	
+	// (void)contentLength;
 	size_t boundaryPos = Type.find("boundary=");
 	if (boundaryPos != NOT_FOUND) {
 		Boundary = "--" + Type.substr(boundaryPos + 9);
-		endBoundary = Boundary + "--";
+		endBoundary = Boundary + "--\r\n";
 	}
 	else
 		throw exc("Boundary not found in Content-Type");
@@ -121,7 +155,12 @@ void Request::parsMultipart(std::stringstream& bodyData, std::string& Path, std:
 		
 		size_t contentStart = headerEnd + 4;
 		size_t contentEnd = body.find(Boundary, contentStart) - 2;
-		if (contentEnd == std::string::npos || contentEnd <= contentStart) break;
+		if (contentEnd == std::string::npos || contentEnd <= contentStart)
+			break;
+		if ((body.find(endBoundary) + endBoundary.length()) - body.find(Boundary) < contentLength) {
+			StatusCode = 400;
+			return ;
+		}
 
 		std::string headers = body.substr(headerStart, headerEnd - headerStart);
 		size_t filenamePos = headers.find("filename=\"");
@@ -160,17 +199,17 @@ void Request::closeFile() {
 	_PostFile.close();
 }
 
-void Request::parsPost(std::stringstream& file, std::string& line, std::string Path) {
+void Request::parsPost(std::stringstream& file, std::string& line, std::string Path, size_t contentLength) {
 	std::string body, value, Key, Tp;
 	while (std::getline(file, line) && !line.substr(0, line.length() - 1).empty()) {
 	}
 	if (_headers["Content-Type"].find("application/x-www-form-urlencoded") == 0)
-		parsApplication(file, line, Path);
+		parsApplication(file, line, Path, contentLength);
 	else if (_headers["Content-Type"].find("multipart/form-data") == 0)
-		parsMultipart(file, Path, _headers["Content-Type"]);
+		parsMultipart(file, Path, _headers["Content-Type"], contentLength);
 }
 
-void Request::ParsRequest(std::stringstream& to_pars, conf* ConfBlock) {
+void Request::ParsRequest(std::stringstream& to_pars, conf* ConfBlock, size_t contentLength) {
 	std::string line = "";
 	std::getline(to_pars, line);
 	std::stringstream req_line(line);
@@ -184,9 +223,13 @@ void Request::ParsRequest(std::stringstream& to_pars, conf* ConfBlock) {
 		}
 	}
 	if (!_headers.empty())
-		ConfBlock->checkRequest(this);
-	if (_method == "POST")
-		parsPost(to_pars, line, ConfBlock->getFullPath());
+		ConfBlock->checkRequest(this, contentLength);
+	if (_method == "POST" && StatusCode == 200)
+		parsPost(to_pars, line, ConfBlock->getFullPath(), contentLength);
+}
+
+void Request::setMethod(std::string to_set) {
+	_method = to_set;
 }
 
 void Request::getRequest(int client_socket, short& event, int MaxSize, conf* ConfBlock) {
@@ -227,7 +270,7 @@ void Request::getRequest(int client_socket, short& event, int MaxSize, conf* Con
 		}
 	}
 	if (total_received > 0) {
-		ParsRequest(buffer, ConfBlock);
+		ParsRequest(buffer, ConfBlock, content_length);
 	}
 }
 
@@ -293,6 +336,34 @@ std::string Request::getMethod() {
 
 std::string& Request::getURL() {
 	return _url;
+}
+
+const std::map<std::string, std::string>& Request::getHeaders() const {
+    return _headers;
+}
+
+const std::map<std::string, std::string>& Request::getBodyMap() const {
+    return _body;
+}
+
+std::string Request::getBodyContent() const {
+    return _body_content;
+}
+
+void Request::setBodyContent(const std::string& content) {
+    _body_content = content;
+}
+
+bool Request::isCGIRequest(const std::string& extension) const {
+    if (_url.empty())
+        return false;
+        
+    size_t dot_pos = _url.find_last_of('.');
+    if (dot_pos != std::string::npos) {
+        std::string file_ext = _url.substr(dot_pos);
+        return (file_ext == extension);
+    }
+    return false;
 }
 
 Request::~Request() {}

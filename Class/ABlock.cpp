@@ -1,5 +1,6 @@
 
 #include "../includes/webserv.hpp"
+#include <cstddef>
 #include <iterator>
 #include <map>
 #include <string>
@@ -115,8 +116,8 @@ bool ABlock::getMethods(std::string to_find) {
 	return false;
 }
 
-int ABlock::getBodysize() {
-	return _bodysize;
+size_t ABlock::getBodysize() {
+	return _bodysize * 1000000;
 }
 
 int ABlock::getTimeout() {

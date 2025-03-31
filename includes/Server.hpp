@@ -72,6 +72,7 @@ class server : public ABlock {
 		void	addLocation(const std::string& Key, location loc);
 		void	addVal();
 		void	checkValue();
+		void	checkPort(server to_check);
 		bool	checkLocation(std::string to_find);
 				void	starting();
 		
@@ -86,6 +87,7 @@ class server : public ABlock {
 		void	closeSocket();
 		void	set_nonblocking(int fd);
 		void	addNametoHost();
+		void	removeNameToHost();
 
     	int getPort() const;
 
@@ -94,7 +96,7 @@ class server : public ABlock {
 		void 		startListens();
 		location	getLocation(std::string to_find);
 		bool getListen(std::string& to_find);
-		std::string getServerName(std::string& to_find);
+		bool getServerName(std::string& to_find);
 		std::vector<std::string>& getServerNames() {
         	return _server_names;
 		}
